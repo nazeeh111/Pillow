@@ -522,21 +522,25 @@ class JpegImageFile(ImageFile.ImageFile):
             exif = self.getexif()
             resolution_unit = exif[0x0128]
             x_resolution = exif[0x011A]
-            try:
-                dpi = float(x_resolution[0]) / x_resolution[1]
-            except TypeError:
-                dpi = x_resolution
-            if math.isnan(dpi):
-                msg = "DPI is not a number"
-                raise ValueError(msg)
-            if resolution_unit == 3:  # cm
-                # 1 dpcm = 2.54 dpi
-                dpi *= 2.54
-            self.info["dpi"] = dpi, dpi
+            dpi = []
+            for resolution in (x_resolution, exif.get(0x011B, x_resolution)):
+                try:
+                    value = float(resolution[0]) / resolution[1]
+                except TypeError:
+                    value = resolution
+                if math.isnan(value):
+                    msg = "DPI is not a number"
+                    raise ValueError(msg)
+                if resolution_unit == 3:  # cm
+                    # 1 dpcm = 2.54 dpi
+                    value *= 2.54
+                dpi.append(value)
+            self.info["dpi"] = tuple(dpi)
         except (
             struct.error,  # truncated EXIF
             KeyError,  # dpi not included
             SyntaxError,  # invalid/unreadable EXIF
+            IndexError,  # dpi is an invalid rational sequence
             TypeError,  # dpi is an invalid float
             ValueError,  # dpi is an invalid float
             ZeroDivisionError,  # invalid dpi rational value

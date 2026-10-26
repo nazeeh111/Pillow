@@ -15,6 +15,7 @@ from PIL import (
     ImageFile,
     ImageOps,
     JpegImagePlugin,
+    TiffImagePlugin,
     UnidentifiedImageError,
     features,
 )
@@ -878,6 +879,107 @@ class TestFileJpeg:
         with Image.open("Tests/images/exif-200dpcm.jpg") as im:
             # Act / Assert
             assert im.info.get("dpi") == (508, 508)
+
+    @pytest.mark.parametrize(
+        "resolution_unit,x_resolution,y_resolution,expected",
+        [
+            (2, 300, 150, (300, 150)),
+            (2, 300.5, 150.5, (300.5, 150.5)),
+            (3, 100, 50, (254, 127)),
+            (3, 100.5, 50.5, (255.27, 128.27)),
+            (2, 300, None, (300, 300)),
+            (3, 100, None, (254, 254)),
+        ],
+    )
+    def test_dpi_axes_from_exif(
+        self,
+        resolution_unit: int,
+        x_resolution: float,
+        y_resolution: float | None,
+        expected: tuple[float, float],
+    ) -> None:
+        exif = Image.Exif()
+        exif[0x0128] = resolution_unit
+        exif[0x011A] = x_resolution
+        if y_resolution is not None:
+            exif[0x011B] = y_resolution
+
+        with self.roundtrip(hopper(), exif=exif) as im:
+            assert im.info["jfif_unit"] == 0
+            assert im.info["dpi"] == pytest.approx(expected)
+
+    def test_dpi_jfif_overrides_exif(self) -> None:
+        exif = Image.Exif()
+        exif[0x0128] = 2
+        exif[0x011A] = 300
+        exif[0x011B] = 150
+
+        with self.roundtrip(hopper(), exif=exif, dpi=(72, 96)) as im:
+            assert im.info["dpi"] == (72, 96)
+
+    def test_dpi_without_jfif_from_exif(self) -> None:
+        exif = Image.Exif()
+        exif[0x0128] = 2
+        exif[0x011A] = 300
+        exif[0x011B] = 150
+        output = BytesIO()
+        hopper().save(output, "JPEG", exif=exif)
+        data = output.getvalue()
+        assert data[2:4] == b"\xff\xe0"
+        app0_length = int.from_bytes(data[4:6], "big")
+        data = data[:2] + data[4 + app0_length :]
+
+        with Image.open(BytesIO(data)) as im:
+            assert "jfif" not in im.info
+            assert im.info["dpi"] == (300, 150)
+
+    def test_dpi_exif_invalid_y_resolution(self) -> None:
+        exif = Image.Exif()
+        exif[0x0128] = 2
+        exif[0x011A] = 300
+        exif[0x011B] = TiffImagePlugin.IFDRational(0, 0)
+
+        with self.roundtrip(hopper(), exif=exif) as im:
+            assert im.info["dpi"] == (72, 72)
+
+    @pytest.mark.parametrize(
+        "tag_type,count,value",
+        [(2, 1, b"\0" * 4), (2, 2, b"1\0\0\0"), (7, 1, b"\0" * 4)],
+    )
+    def test_dpi_exif_short_y_resolution(
+        self, tag_type: int, count: int, value: bytes
+    ) -> None:
+        # ASCII and UNDEFINED values shorter than a rational pair are invalid.
+        entries = (
+            struct.pack(">HHII", 0x011A, 4, 1, 300)
+            + struct.pack(">HHI4s", 0x011B, tag_type, count, value)
+            + struct.pack(">HHI4s", 0x0128, 3, 1, b"\0\2\0\0")
+        )
+        exif = b"Exif\0\0MM\0*\0\0\0\x08" + struct.pack(">H", 3) + entries + b"\0" * 4
+
+        with self.roundtrip(hopper(), exif=exif) as im:
+            im.load()
+            assert im.info["dpi"] == (72, 72)
+
+    @pytest.mark.parametrize(
+        "resolution_unit,expected", [(2, (300, 150)), (3, (762, 381))]
+    )
+    def test_dpi_exif_rational_tuples(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        resolution_unit: int,
+        expected: tuple[float, float],
+    ) -> None:
+        # Legacy EXIF providers may return (numerator, denominator) tuples.
+        exif = {0x0128: resolution_unit, 0x011A: (600, 2), 0x011B: (450, 3)}
+        with Image.open("Tests/images/photoshop-200dpi.jpg") as im:
+            assert isinstance(im, JpegImagePlugin.JpegImageFile)
+            monkeypatch.setattr(im, "getexif", lambda: exif)
+            del im.info["dpi"]
+
+            im._read_dpi_from_exif()
+
+            assert im.info["dpi"] == expected
 
     def test_dpi_exif_zero_division(self) -> None:
         # Arrange

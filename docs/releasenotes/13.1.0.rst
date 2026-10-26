@@ -49,6 +49,15 @@ TODO
 Other changes
 =============
 
+JPEG EXIF resolution
+^^^^^^^^^^^^^^^^^^^^
+
+When reading JPEG resolution from EXIF, the horizontal resolution was used for
+both axes. The vertical resolution is now read separately when present.
+If it is absent, the horizontal resolution is still used for both axes.
+Invalid vertical resolution now triggers the same 72 dpi fallback as invalid
+horizontal resolution.
+
 Resizing I;16B and I;16N images
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
